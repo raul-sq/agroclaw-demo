@@ -40,8 +40,8 @@ GATEWAY_PID=$!
 
 echo "[agroclaw] Waiting for Gateway readiness..."
 for i in $(seq 1 120); do
-  if curl -fsS "http://127.0.0.1:18789/readyz" >/dev/null 2>&1; then
-    echo "[agroclaw] Gateway readyz OK."
+  if curl -fsS "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
+    echo "[agroclaw] Gateway healthz OK."
     break
   fi
 
@@ -54,8 +54,8 @@ for i in $(seq 1 120); do
   sleep 2
 done
 
-if ! curl -fsS "http://127.0.0.1:18789/readyz" >/dev/null 2>&1; then
-  echo "[agroclaw] Gateway did not become ready."
+if ! curl -fsS "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
+  echo "[agroclaw] Gateway did not become healthy."
   cat /tmp/openclaw-gateway.log || true
   exit 1
 fi

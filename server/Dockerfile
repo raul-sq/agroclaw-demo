@@ -16,6 +16,10 @@ RUN apt-get update \
     bash \
     ca-certificates \
     curl \
+    git \
+    lsof \
+    procps \
+    psmisc \
     tini \
   && rm -rf /var/lib/apt/lists/*
 

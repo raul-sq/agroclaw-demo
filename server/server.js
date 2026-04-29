@@ -10,8 +10,8 @@ const HOST = process.env.HOST || "0.0.0.0";
 const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || "main";
 const OPENCLAW_COMMAND = process.env.OPENCLAW_COMMAND || "openclaw";
 const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 300000);
-const OPENCLAW_GATEWAY_READY_URL =
-  process.env.OPENCLAW_GATEWAY_READY_URL || "http://127.0.0.1:18789/readyz";
+const OPENCLAW_GATEWAY_HEALTH_URL =
+  process.env.OPENCLAW_GATEWAY_HEALTH_URL || "http://127.0.0.1:18789/healthz";
 
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || 4000);
 const MAX_CONCURRENT_REQUESTS = Number(process.env.MAX_CONCURRENT_REQUESTS || 1);
@@ -92,12 +92,12 @@ function cleanOpenClawOutput(rawOutput) {
   return filtered.join("\n").trim();
 }
 
-async function checkGatewayReady() {
+async function checkGatewayLive() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3000);
 
   try {
-    const response = await fetch(OPENCLAW_GATEWAY_READY_URL, {
+    const response = await fetch(OPENCLAW_GATEWAY_HEALTH_URL, {
       signal: controller.signal
     });
 
@@ -187,7 +187,7 @@ function runOpenClaw(prompt) {
 }
 
 app.get("/health", async (_req, res) => {
-  const gateway = await checkGatewayReady();
+  const gateway = await checkGatewayLive();
 
   const status = gateway.ok ? 200 : 503;
 
@@ -221,11 +221,11 @@ app.post("/api/agroclaw/chat", async (req, res) => {
     });
   }
 
-  const gateway = await checkGatewayReady();
+  const gateway = await checkGatewayLive();
 
   if (!gateway.ok) {
     return res.status(503).json({
-      error: "OpenClaw Gateway is not ready",
+      error: "OpenClaw Gateway is not live",
       gateway
     });
   }
