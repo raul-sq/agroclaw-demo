@@ -1,13 +1,13 @@
-// AgroClaw Express bridge
+// AgroClaw Express bridge (ESM)
 // - GET  /health   → 200 always while Express is alive (Coolify liveness)
 // - GET  /status   → real status (gateway + warmup + ready)
 // - POST /api/agroclaw/chat → 503 until ready, then proxies to OpenClaw agent
 
-const express = require('express');
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
+import express from 'express';
+import cors from 'cors';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 // ---------- config ----------
 const PORT = parseInt(process.env.PORT || '3000', 10);
