@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -9,7 +9,11 @@ type DemoPrompt = {
   prompt: string;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+type BackendStatus = "checking" | "ready" | "error";
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+
 const AGROCLAW_ENDPOINT =
   import.meta.env.VITE_AGROCLAW_ENDPOINT ?? "/api/agroclaw/chat";
 
@@ -112,6 +116,18 @@ function normalizeAnswer(data: unknown): string {
   return JSON.stringify(data, null, 2);
 }
 
+async function checkAgroClawHealth(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`, {
+      method: "GET",
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function askAgroClaw(prompt: string): Promise<string> {
   const response = await fetch(`${API_BASE_URL}${AGROCLAW_ENDPOINT}`, {
     method: "POST",
@@ -127,6 +143,7 @@ async function askAgroClaw(prompt: string): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text();
+
     throw new Error(
       `Error del backend ${response.status}: ${errorText || response.statusText}`
     );
@@ -136,6 +153,18 @@ async function askAgroClaw(prompt: string): Promise<string> {
   return normalizeAnswer(data);
 }
 
+function getBackendBadgeText(status: BackendStatus): string {
+  if (status === "checking") {
+    return "Despertando backend · Render";
+  }
+
+  if (status === "ready") {
+    return "Backend listo · Codex GPT-5.4";
+  }
+
+  return "Backend no disponible";
+}
+
 function App() {
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
@@ -143,8 +172,47 @@ function App() {
   const [lastPromptTitle, setLastPromptTitle] = useState("");
   const [freePrompt, setFreePrompt] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [backendStatus, setBackendStatus] =
+    useState<BackendStatus>("checking");
+
+  const backendReady = backendStatus === "ready";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function warmBackend() {
+      setBackendStatus("checking");
+
+      const isReady = await checkAgroClawHealth();
+
+      if (!cancelled) {
+        setBackendStatus(isReady ? "ready" : "error");
+      }
+    }
+
+    void warmBackend();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function retryBackendHealth() {
+    setBackendStatus("checking");
+
+    const isReady = await checkAgroClawHealth();
+
+    setBackendStatus(isReady ? "ready" : "error");
+  }
 
   async function runPrompt(prompt: string, title: string, id: string | null) {
+    if (!backendReady) {
+      setError(
+        "El backend de AgroClaw todavía no está listo. Espera a que el indicador de cabecera muestre “Backend listo” o pulsa “Reintentar conexión”."
+      );
+      return;
+    }
+
     setIsLoading(true);
     setError("");
     setAnswer("");
@@ -183,11 +251,35 @@ function App() {
             Demo controlada para olivar: knowledge curado, referencias visuales
             documentadas y respuestas prudentes en lenguaje natural.
           </p>
+
+          {backendStatus === "checking" && (
+            <p className="backend-header-notice">
+              Render puede tardar en activar el backend si estaba en reposo. La
+              demo está despertando el servicio antes de habilitar las tarjetas.
+            </p>
+          )}
+
+          {backendStatus === "error" && (
+            <div className="backend-header-warning">
+              <span>
+                El backend no está disponible ahora mismo. Comprueba Render o
+                reintenta la conexión.
+              </span>
+
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void retryBackendHealth()}
+              >
+                Reintentar conexión
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="badge">
+        <div className={`badge badge--${backendStatus}`}>
           <span className="badge-dot" />
-          Demo local · Codex GPT-5.4 · objetivo GPT-5.5
+          {getBackendBadgeText(backendStatus)}
         </div>
       </header>
 
@@ -230,17 +322,24 @@ function App() {
                 <button
                   type="button"
                   onClick={() =>
-                    runPrompt(
+                    void runPrompt(
                       demoPrompt.prompt,
                       demoPrompt.title,
                       demoPrompt.id
                     )
                   }
-                  disabled={isLoading}
+                  disabled={isLoading || !backendReady}
+                  title={
+                    backendReady
+                      ? "Ejecutar prompt"
+                      : "El backend todavía no está listo"
+                  }
                 >
                   {isLoading && activePromptId === demoPrompt.id
                     ? "Consultando..."
-                    : "Ejecutar"}
+                    : backendReady
+                      ? "Ejecutar"
+                      : "Esperando backend"}
                 </button>
               </article>
             ))}
@@ -263,12 +362,17 @@ function App() {
             <button
               type="button"
               className="secondary"
-              disabled={isLoading || !freePrompt.trim()}
+              disabled={isLoading || !backendReady || !freePrompt.trim()}
+              title={
+                backendReady
+                  ? "Ejecutar consulta libre"
+                  : "El backend todavía no está listo"
+              }
               onClick={() =>
-                runPrompt(freePrompt.trim(), "Consulta libre", null)
+                void runPrompt(freePrompt.trim(), "Consulta libre", null)
               }
             >
-              Ejecutar consulta libre
+              {backendReady ? "Ejecutar consulta libre" : "Esperando backend"}
             </button>
           </div>
         </section>
@@ -289,7 +393,7 @@ function App() {
                 type="button"
                 className="ghost"
                 disabled={!answer}
-                onClick={() => navigator.clipboard.writeText(answer)}
+                onClick={() => void navigator.clipboard.writeText(answer)}
               >
                 Copiar
               </button>
@@ -306,7 +410,9 @@ function App() {
           </div>
 
           <div className="response-box">
-            {isLoading && <p className="loading">AgroClaw está consultando...</p>}
+            {isLoading && (
+              <p className="loading">AgroClaw está consultando...</p>
+            )}
 
             {error && <pre className="error">{error}</pre>}
 
