@@ -3,19 +3,46 @@ import cors from "cors";
 import { spawn } from "node:child_process";
 
 const app = express();
-const PORT = 3000;
+
+const PORT = Number(process.env.PORT || 3000);
+const HOST = "0.0.0.0";
+
+const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || "main";
+const OPENCLAW_COMMAND = process.env.OPENCLAW_COMMAND || "openclaw";
+const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 180000);
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173,https://agroclaw-demo.netlify.app")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`CORS blocked origin: ${origin}`));
+  },
 }));
 
 app.use(express.json({ limit: "2mb" }));
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "agroclaw-demo-bridge",
+    agent: OPENCLAW_AGENT_ID,
+  });
+});
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "agroclaw-demo-bridge",
-    agent: "main",
+    agent: OPENCLAW_AGENT_ID,
+    allowedOrigins,
   });
 });
 
@@ -51,9 +78,11 @@ app.post("/api/agroclaw/chat", (req, res) => {
     });
   }
 
+  let responseSent = false;
+
   const child = spawn(
-    "openclaw",
-    ["agent", "--agent", "main", "--message", prompt],
+    OPENCLAW_COMMAND,
+    ["agent", "--agent", OPENCLAW_AGENT_ID, "--message", prompt],
     {
       env: process.env,
     }
@@ -61,6 +90,20 @@ app.post("/api/agroclaw/chat", (req, res) => {
 
   let stdout = "";
   let stderr = "";
+
+  const timeout = setTimeout(() => {
+    if (responseSent) return;
+
+    responseSent = true;
+    child.kill("SIGTERM");
+
+    res.status(504).json({
+      error: "OpenClaw request timed out",
+      timeoutMs: OPENCLAW_TIMEOUT_MS,
+      stdout,
+      stderr,
+    });
+  }, OPENCLAW_TIMEOUT_MS);
 
   child.stdout.on("data", (data) => {
     stdout += data.toString();
@@ -71,12 +114,23 @@ app.post("/api/agroclaw/chat", (req, res) => {
   });
 
   child.on("error", (error) => {
+    if (responseSent) return;
+
+    clearTimeout(timeout);
+    responseSent = true;
+
     res.status(500).json({
       error: `Failed to start OpenClaw: ${error.message}`,
+      command: OPENCLAW_COMMAND,
     });
   });
 
   child.on("close", (code) => {
+    if (responseSent) return;
+
+    clearTimeout(timeout);
+    responseSent = true;
+
     if (code !== 0) {
       return res.status(500).json({
         error: "OpenClaw command failed",
@@ -93,6 +147,7 @@ app.post("/api/agroclaw/chat", (req, res) => {
   });
 });
 
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`AgroClaw demo bridge listening on http://127.0.0.1:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`AgroClaw demo bridge listening on http://${HOST}:${PORT}`);
+  console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
 });
