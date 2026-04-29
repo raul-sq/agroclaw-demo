@@ -15,17 +15,14 @@ OPENCLAW_WORKSPACE="${OPENCLAW_DIR}/workspace"
 
 GATEWAY_HEALTH_URL="${OPENCLAW_GATEWAY_HEALTH_URL:-http://127.0.0.1:18789/healthz}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
-# Two phases:
-#  - HTTP listen (healthz=200): typically ~15-30s
-#  - Full ready (sidecars + channels): typically ~2-3 min after listen
 GATEWAY_LISTEN_TIMEOUT_S="${OPENCLAW_GATEWAY_LISTEN_TIMEOUT_S:-180}"
 GATEWAY_READY_TIMEOUT_S="${OPENCLAW_GATEWAY_READY_TIMEOUT_S:-300}"
 
 WARMUP_ENABLED="${AGROCLAW_WARMUP_ENABLED:-true}"
-WARMUP_PROMPT="${AGROCLAW_WARMUP_PROMPT:-Responde unicamente: AgroClaw listo. No uses herramientas externas.}"
-WARMUP_TIMEOUT_S="${AGROCLAW_WARMUP_TIMEOUT_SECONDS:-300}"
+WARMUP_PROMPT="${AGROCLAW_WARMUP_PROMPT:-Responde unicamente: AgroClaw listo.}"
+WARMUP_TIMEOUT_S="${AGROCLAW_WARMUP_TIMEOUT_SECONDS:-60}"
 WARMUP_MAX_RETRIES="${AGROCLAW_WARMUP_MAX_RETRIES:-3}"
-AGENT_ID="${OPENCLAW_AGENT_ID:-main}"
+OPENCLAW_MODEL="${OPENCLAW_MODEL:-openai-codex/gpt-5.5}"
 
 BOOTSTRAP_MODE="${AGROCLAW_BOOTSTRAP_MODE:-false}"
 
@@ -57,6 +54,7 @@ fi
 log "OpenClaw dir:       ${OPENCLAW_DIR}"
 log "OpenClaw config:    ${OPENCLAW_CONFIG}"
 log "OpenClaw workspace: ${OPENCLAW_WORKSPACE}"
+log "OpenClaw model:     ${OPENCLAW_MODEL}"
 
 if [[ ! -f "${OPENCLAW_CONFIG}" ]]; then
   log "FATAL: missing OpenClaw config at ${OPENCLAW_CONFIG}"
@@ -75,7 +73,6 @@ start_gateway() {
   log "gateway pid=${gw_pid}, log=${GATEWAY_LOG}"
 }
 
-# Phase 1: wait until the HTTP server accepts /healthz (gateway "live")
 wait_for_gateway_listen() {
   local deadline=$(( $(date +%s) + GATEWAY_LISTEN_TIMEOUT_S ))
   local attempt=0
@@ -91,11 +88,6 @@ wait_for_gateway_listen() {
   return 1
 }
 
-# Phase 2: wait until the gateway is FULLY ready to accept agent traffic.
-# Detection strategy: parse gateway.log for "[gateway] ready" line, which is what
-# OpenClaw emits when sidecars/channels are up. This is the strongest signal we
-# have without /readyz (which is too strict for this demo: it fails on
-# startup-sidecars even when agent calls work).
 wait_for_gateway_ready() {
   local deadline=$(( $(date +%s) + GATEWAY_READY_TIMEOUT_S ))
   while (( $(date +%s) < deadline )); do
@@ -109,11 +101,14 @@ wait_for_gateway_ready() {
   return 1
 }
 
-# ---------- warm-up ----------
+# ---------- warm-up via 'infer model run' (fast: ~10-15s) ----------
 run_warmup_once() {
   timeout "${WARMUP_TIMEOUT_S}" \
-    openclaw agent --agent "${AGENT_ID}" --message "${WARMUP_PROMPT}" \
-    >>"${WARMUP_LOG}" 2>&1
+    openclaw infer model run \
+      --gateway \
+      --model "${OPENCLAW_MODEL}" \
+      --prompt "${WARMUP_PROMPT}" \
+      >>"${WARMUP_LOG}" 2>&1
 }
 
 run_warmup() {
@@ -124,7 +119,7 @@ run_warmup() {
     return 0
   fi
 
-  log "running warm-up (timeout=${WARMUP_TIMEOUT_S}s, retries=${WARMUP_MAX_RETRIES})"
+  log "running warm-up via 'infer model run' (timeout=${WARMUP_TIMEOUT_S}s, retries=${WARMUP_MAX_RETRIES})"
   echo "running" > "${STATE_WARMUP}"
 
   local i
@@ -143,7 +138,6 @@ run_warmup() {
 
   log "warm-up FAILED after ${WARMUP_MAX_RETRIES} attempts (see ${WARMUP_LOG}) — service stays alive"
   echo "failed" > "${STATE_WARMUP}"
-  # ready stays false; chat endpoint will return 503 with a clear message
 }
 
 orchestrate() {
@@ -155,12 +149,9 @@ orchestrate() {
     log "abort: gateway HTTP never came up"
     return
   fi
-  # We mark gateway as 'listening' here, then upgrade to 'ready' after Phase 2.
   echo "listening" > "${STATE_GATEWAY}"
 
   if ! wait_for_gateway_ready; then
-    # Even without the explicit log marker we proceed to warm-up retries; sometimes
-    # OpenClaw versions change wording. The retry loop will catch transient failures.
     log "proceeding to warm-up despite missing 'ready' log marker"
     echo "ready_unknown" > "${STATE_GATEWAY}"
   else
