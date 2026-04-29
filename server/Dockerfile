@@ -27,8 +27,12 @@ COPY server.js ./server.js
 COPY scripts/ ./scripts/
 RUN chmod +x /app/scripts/start.sh
 
-# Persistent OpenClaw home (mounted by Coolify)
-ENV OPENCLAW_HOME=/home/node/.openclaw
+# IMPORTANT: Do NOT set OPENCLAW_HOME.
+# OpenClaw resolves config as $OPENCLAW_HOME/.openclaw/openclaw.json when set
+# (i.e. it appends ".openclaw" itself). Setting OPENCLAW_HOME=/home/node/.openclaw
+# made it look in /home/node/.openclaw/.openclaw/openclaw.json -> "Missing config".
+# With HOME=/home/node and OPENCLAW_HOME unset, OpenClaw uses $HOME/.openclaw which
+# is exactly where the persistent volume is mounted.
 RUN mkdir -p /home/node/.openclaw && chown -R node:node /home/node
 
 USER node

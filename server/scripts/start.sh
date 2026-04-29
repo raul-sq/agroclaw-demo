@@ -7,9 +7,11 @@ set -u
 set -o pipefail
 
 # ---------- config ----------
-OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
-OPENCLAW_CONFIG="${OPENCLAW_HOME}/openclaw.json"
-OPENCLAW_WORKSPACE="${OPENCLAW_HOME}/workspace"
+# Do NOT export OPENCLAW_HOME: openclaw appends ".openclaw" itself when that var is set,
+# producing /home/node/.openclaw/.openclaw/openclaw.json. We rely on HOME instead.
+OPENCLAW_DIR="${HOME}/.openclaw"
+OPENCLAW_CONFIG="${OPENCLAW_DIR}/openclaw.json"
+OPENCLAW_WORKSPACE="${OPENCLAW_DIR}/workspace"
 
 GATEWAY_HEALTH_URL="${OPENCLAW_GATEWAY_HEALTH_URL:-http://127.0.0.1:18789/healthz}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
@@ -45,7 +47,7 @@ if [[ "${BOOTSTRAP_MODE}" == "true" ]]; then
 fi
 
 # ---------- workspace sanity ----------
-log "OpenClaw home:      ${OPENCLAW_HOME}"
+log "OpenClaw dir:       ${OPENCLAW_DIR}"
 log "OpenClaw config:    ${OPENCLAW_CONFIG}"
 log "OpenClaw workspace: ${OPENCLAW_WORKSPACE}"
 
