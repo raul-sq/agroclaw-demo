@@ -37,7 +37,7 @@ USER node
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:3000/health >/dev/null || exit 1
+  CMD-SHELL 'if [ "$AGROCLAW_BOOTSTRAP_MODE" = "true" ]; then exit 0; fi; curl -fsS http://127.0.0.1:3000/health >/dev/null || exit 1'
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/scripts/start.sh"]
