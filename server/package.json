@@ -1,0 +1,17 @@
+{
+  "name": "agroclaw-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Persistent AgroClaw HTTP bridge for Coolify",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.14"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  }
+}

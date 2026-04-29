@@ -1,0 +1,43 @@
+services:
+  agroclaw-backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        OPENCLAW_VERSION: ${OPENCLAW_VERSION:-2026.4.26}
+
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?}
+      OPENCLAW_AGENT_ID: ${OPENCLAW_AGENT_ID:-main}
+      OPENCLAW_COMMAND: openclaw
+      OPENCLAW_TIMEOUT_MS: ${OPENCLAW_TIMEOUT_MS:-300000}
+      OPENCLAW_GATEWAY_READY_URL: http://127.0.0.1:18789/readyz
+      OPENCLAW_HOME: /home/node/.openclaw
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      AGROCLAW_BOOTSTRAP_MODE: ${AGROCLAW_BOOTSTRAP_MODE:-false}
+      AGROCLAW_WARMUP_ENABLED: ${AGROCLAW_WARMUP_ENABLED:-true}
+      AGROCLAW_WARMUP_TIMEOUT_SECONDS: ${AGROCLAW_WARMUP_TIMEOUT_SECONDS:-300}
+      AGROCLAW_WARMUP_PROMPT: ${AGROCLAW_WARMUP_PROMPT:-Responde únicamente: AgroClaw listo. No uses herramientas externas.}
+      MAX_PROMPT_CHARS: ${MAX_PROMPT_CHARS:-4000}
+      MAX_CONCURRENT_REQUESTS: ${MAX_CONCURRENT_REQUESTS:-1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+    volumes:
+      - agroclaw-openclaw-home:/home/node/.openclaw
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+volumes:
+  agroclaw-openclaw-home:
