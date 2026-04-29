@@ -1,251 +1,167 @@
-import express from "express";
-import cors from "cors";
-import { spawn } from "node:child_process";
+// AgroClaw Express bridge
+// - GET  /health   → 200 always while Express is alive (Coolify liveness)
+// - GET  /status   → real status (gateway + warmup + ready)
+// - POST /api/agroclaw/chat → 503 until ready, then proxies to OpenClaw agent
 
-const app = express();
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "0.0.0.0";
+// ---------- config ----------
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || "main";
-const OPENCLAW_COMMAND = process.env.OPENCLAW_COMMAND || "openclaw";
-const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 300000);
-const OPENCLAW_GATEWAY_HEALTH_URL =
-  process.env.OPENCLAW_GATEWAY_HEALTH_URL || "http://127.0.0.1:18789/healthz";
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+  'https://agroclaw-demo.netlify.app,http://localhost:5173')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
-const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || 4000);
-const MAX_CONCURRENT_REQUESTS = Number(process.env.MAX_CONCURRENT_REQUESTS || 1);
+const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || 'main';
+const OPENCLAW_TIMEOUT_MS = parseInt(process.env.OPENCLAW_TIMEOUT_MS || '300000', 10);
+const MAX_PROMPT_CHARS = parseInt(process.env.MAX_PROMPT_CHARS || '4000', 10);
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_REQUESTS || '1', 10);
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS ||
-  "https://agroclaw-demo.netlify.app,http://localhost:5173")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const STATE_DIR = '/tmp/agroclaw-state';
+const STATE_GATEWAY = path.join(STATE_DIR, 'gateway.flag');
+const STATE_WARMUP  = path.join(STATE_DIR, 'warmup.flag');
+const STATE_READY   = path.join(STATE_DIR, 'ready.flag');
 
-let runningRequests = 0;
-const pendingQueue = [];
+// ---------- helpers ----------
+function readFlag(p, fallback = 'unknown') {
+  try { return fs.readFileSync(p, 'utf8').trim() || fallback; }
+  catch { return fallback; }
+}
 
-function enqueue(task) {
+function getStatus() {
+  return {
+    gateway: readFlag(STATE_GATEWAY, 'unknown'),
+    warmup:  readFlag(STATE_WARMUP,  'unknown'),
+    ready:   readFlag(STATE_READY,   'false') === 'true',
+    pid: process.pid,
+    uptime_s: Math.round(process.uptime()),
+  };
+}
+
+// ---------- request queue ----------
+let inflight = 0;
+const queue = [];
+
+function runQueued(task) {
   return new Promise((resolve, reject) => {
-    const run = async () => {
-      runningRequests += 1;
-
-      try {
-        resolve(await task());
-      } catch (error) {
-        reject(error);
-      } finally {
-        runningRequests -= 1;
-
-        const next = pendingQueue.shift();
-        if (next) {
-          next();
-        }
-      }
-    };
-
-    if (runningRequests < MAX_CONCURRENT_REQUESTS) {
-      run();
-    } else {
-      pendingQueue.push(run);
-    }
+    queue.push({ task, resolve, reject });
+    drain();
   });
 }
 
-app.disable("x-powered-by");
-
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error(`CORS blocked origin: ${origin}`));
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"]
-  })
-);
-
-app.use(express.json({ limit: "2mb" }));
-
-function cleanOpenClawOutput(rawOutput) {
-  const lines = rawOutput
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0);
-
-  const filtered = lines.filter((line) => {
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith("OpenClaw")) return false;
-    if (trimmed.startsWith("◇")) return false;
-    if (trimmed === "◇") return false;
-    if (trimmed === "│") return false;
-    if (trimmed.startsWith("Hot reload")) return false;
-
-    return true;
-  });
-
-  return filtered.join("\n").trim();
-}
-
-async function checkGatewayLive() {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3000);
-
-  try {
-    const response = await fetch(OPENCLAW_GATEWAY_HEALTH_URL, {
-      signal: controller.signal
+function drain() {
+  while (inflight < MAX_CONCURRENT && queue.length > 0) {
+    const { task, resolve, reject } = queue.shift();
+    inflight++;
+    task().then(resolve, reject).finally(() => {
+      inflight--;
+      drain();
     });
-
-    return {
-      ok: response.ok,
-      status: response.status
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error.message
-    };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
-function runOpenClaw(prompt) {
+// ---------- openclaw invocation ----------
+function callAgent(prompt) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      OPENCLAW_COMMAND,
-      ["agent", "--agent", OPENCLAW_AGENT_ID, "--message", prompt],
-      {
-        env: process.env
-      }
-    );
+    const args = ['agent', '--agent', OPENCLAW_AGENT_ID, '--message', prompt];
+    const child = spawn('openclaw', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    let stdout = "";
-    let stderr = "";
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
 
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-
-      reject({
-        status: 504,
-        payload: {
-          error: "OpenClaw request timed out",
-          timeoutMs: OPENCLAW_TIMEOUT_MS,
-          stdout,
-          stderr
-        }
-      });
+    const killer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
     }, OPENCLAW_TIMEOUT_MS);
 
-    child.stdout.on("data", (data) => {
-      stdout += data.toString();
+    child.stdout.on('data', d => { stdout += d.toString(); });
+    child.stderr.on('data', d => { stderr += d.toString(); });
+
+    child.on('error', err => {
+      clearTimeout(killer);
+      reject(err);
     });
 
-    child.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-
-      reject({
-        status: 500,
-        payload: {
-          error: `Failed to start OpenClaw: ${error.message}`,
-          command: OPENCLAW_COMMAND
-        }
-      });
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-
-      if (code !== 0) {
-        reject({
-          status: 500,
-          payload: {
-            error: "OpenClaw command failed",
-            code,
-            stderr,
-            stdout
-          }
-        });
-        return;
-      }
-
-      resolve({
-        answer: cleanOpenClawOutput(stdout),
-        raw: stdout
-      });
+    child.on('close', code => {
+      clearTimeout(killer);
+      if (timedOut) return reject(new Error('openclaw_timeout'));
+      if (code !== 0) return reject(new Error(`openclaw_exit_${code}: ${stderr.slice(0, 500)}`));
+      resolve(stdout.trim());
     });
   });
 }
 
-app.get("/health", async (_req, res) => {
-  const gateway = await checkGatewayLive();
+// ---------- app ----------
+const app = express();
 
-  const status = gateway.ok ? 200 : 503;
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // curl, server-to-server
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error('cors_denied'));
+  },
+}));
 
-  res.status(status).json({
-    ok: gateway.ok,
-    service: "agroclaw-backend",
-    bridge: true,
-    gateway,
-    agent: OPENCLAW_AGENT_ID,
-    queue: {
-      runningRequests,
-      pendingRequests: pendingQueue.length,
-      maxConcurrentRequests: MAX_CONCURRENT_REQUESTS
-    }
-  });
+app.use(express.json({ limit: '64kb' }));
+
+// Liveness: always 200 while Express is up. This is what Coolify watches.
+app.get('/health', (_req, res) => {
+  res.status(200).json({ ok: true });
 });
 
-app.post("/api/agroclaw/chat", async (req, res) => {
-  const prompt = req.body?.prompt;
+// Readiness/diagnostic: real subsystem state.
+app.get('/status', (_req, res) => {
+  const s = getStatus();
+  res.status(200).json(s);
+});
 
-  if (!prompt || typeof prompt !== "string") {
-    return res.status(400).json({
-      error: "Missing prompt"
-    });
-  }
-
-  if (prompt.length > MAX_PROMPT_CHARS) {
-    return res.status(413).json({
-      error: "Prompt too long",
-      maxPromptChars: MAX_PROMPT_CHARS
-    });
-  }
-
-  const gateway = await checkGatewayLive();
-
-  if (!gateway.ok) {
+// Chat endpoint
+app.post('/api/agroclaw/chat', async (req, res) => {
+  const s = getStatus();
+  if (!s.ready) {
+    res.set('Retry-After', '20');
     return res.status(503).json({
-      error: "OpenClaw Gateway is not live",
-      gateway
+      error: 'warming',
+      status: s,
+      message: 'AgroClaw is warming up. Retry shortly.',
     });
+  }
+
+  const prompt = (req.body && typeof req.body.message === 'string') ? req.body.message : '';
+  if (!prompt) {
+    return res.status(400).json({ error: 'missing_message' });
+  }
+  if (prompt.length > MAX_PROMPT_CHARS) {
+    return res.status(413).json({ error: 'prompt_too_long', max: MAX_PROMPT_CHARS });
   }
 
   try {
-    const result = await enqueue(() => runOpenClaw(prompt));
-    res.json(result);
-  } catch (error) {
-    const status = error.status || 500;
-    res.status(status).json(error.payload || { error: String(error) });
+    const reply = await runQueued(() => callAgent(prompt));
+    return res.status(200).json({ reply });
+  } catch (err) {
+    const msg = (err && err.message) || 'agent_error';
+    const status = msg === 'openclaw_timeout' ? 504 : 502;
+    return res.status(status).json({ error: msg });
   }
 });
 
-app.use((_req, res) => {
-  res.status(404).json({
-    error: "Not found"
-  });
+// 404 fallthrough
+app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[agroclaw] express listening on :${PORT}`);
+  console.log(`[agroclaw] allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`AgroClaw backend listening on http://${HOST}:${PORT}`);
-  console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
-});
+function shutdown(signal) {
+  console.log(`[agroclaw] received ${signal}, closing...`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));

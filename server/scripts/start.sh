@@ -1,82 +1,130 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# AgroClaw container entrypoint
+# Strategy: start Express IMMEDIATELY so Coolify healthcheck passes.
+# Gateway + warm-up run in background and update state flags consumed by server.js.
 
-export HOME="${HOME:-/home/node}"
-export OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
-export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/.openclaw}"
-export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/home/node/.openclaw/openclaw.json}"
-export OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}"
+set -u
+set -o pipefail
 
-mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_STATE_DIR" "$OPENCLAW_WORKSPACE_DIR"
+# ---------- config ----------
+OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
+OPENCLAW_CONFIG="${OPENCLAW_HOME}/openclaw.json"
+OPENCLAW_WORKSPACE="${OPENCLAW_HOME}/workspace"
 
-echo "[agroclaw] OpenClaw home: $OPENCLAW_HOME"
-echo "[agroclaw] OpenClaw config: $OPENCLAW_CONFIG_PATH"
-echo "[agroclaw] OpenClaw workspace: $OPENCLAW_WORKSPACE_DIR"
+GATEWAY_HEALTH_URL="${OPENCLAW_GATEWAY_HEALTH_URL:-http://127.0.0.1:18789/healthz}"
+GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+GATEWAY_BOOT_TIMEOUT_S="${OPENCLAW_GATEWAY_BOOT_TIMEOUT_S:-180}"
 
-bash /app/scripts/provision-workspace.sh
+WARMUP_ENABLED="${AGROCLAW_WARMUP_ENABLED:-true}"
+WARMUP_PROMPT="${AGROCLAW_WARMUP_PROMPT:-Responde unicamente: AgroClaw listo. No uses herramientas externas.}"
+WARMUP_TIMEOUT_S="${AGROCLAW_WARMUP_TIMEOUT_SECONDS:-300}"
+AGENT_ID="${OPENCLAW_AGENT_ID:-main}"
 
-if ! command -v openclaw >/dev/null 2>&1; then
-  echo "[agroclaw] ERROR: openclaw command not found."
+BOOTSTRAP_MODE="${AGROCLAW_BOOTSTRAP_MODE:-false}"
+
+STATE_DIR="/tmp/agroclaw-state"
+STATE_GATEWAY="${STATE_DIR}/gateway.flag"
+STATE_WARMUP="${STATE_DIR}/warmup.flag"
+STATE_READY="${STATE_DIR}/ready.flag"
+GATEWAY_LOG="${STATE_DIR}/gateway.log"
+WARMUP_LOG="${STATE_DIR}/warmup.log"
+
+mkdir -p "${STATE_DIR}"
+echo "starting" > "${STATE_GATEWAY}"
+echo "pending"  > "${STATE_WARMUP}"
+echo "false"    > "${STATE_READY}"
+
+log() {
+  echo "[agroclaw $(date -u +%H:%M:%S)] $*"
+}
+
+# ---------- bootstrap mode short-circuit ----------
+if [[ "${BOOTSTRAP_MODE}" == "true" ]]; then
+  log "BOOTSTRAP_MODE=true -> sleeping forever (use this container as a shell to run onboarding)"
+  exec tail -f /dev/null
+fi
+
+# ---------- workspace sanity ----------
+log "OpenClaw home:      ${OPENCLAW_HOME}"
+log "OpenClaw config:    ${OPENCLAW_CONFIG}"
+log "OpenClaw workspace: ${OPENCLAW_WORKSPACE}"
+
+if [[ ! -f "${OPENCLAW_CONFIG}" ]]; then
+  log "FATAL: missing OpenClaw config at ${OPENCLAW_CONFIG}"
+  log "Run the container once with AGROCLAW_BOOTSTRAP_MODE=true and complete onboarding inside it."
   exit 1
 fi
 
-if [ ! -f "$OPENCLAW_CONFIG_PATH" ]; then
-  echo "[agroclaw] OpenClaw config not found at $OPENCLAW_CONFIG_PATH"
+mkdir -p "${OPENCLAW_WORKSPACE}"
 
-  if [ "${AGROCLAW_BOOTSTRAP_MODE:-false}" = "true" ]; then
-    echo "[agroclaw] Bootstrap mode enabled."
-    echo "[agroclaw] Keeping container alive so you can open a terminal and run OpenClaw onboarding."
-    echo "[agroclaw] After onboarding, set AGROCLAW_BOOTSTRAP_MODE=false and redeploy."
-    tail -f /dev/null
+# ---------- background: gateway ----------
+start_gateway() {
+  log "launching OpenClaw Gateway on port ${GATEWAY_PORT}"
+  # 'run' (not '--force'): we are in a fresh container, no listeners to kill.
+  # Output goes to a log file we keep, so we can inspect it via /status.
+  openclaw gateway run >>"${GATEWAY_LOG}" 2>&1 &
+  local gw_pid=$!
+  echo "${gw_pid}" > "${STATE_DIR}/gateway.pid"
+  log "gateway pid=${gw_pid}, log=${GATEWAY_LOG}"
+}
+
+wait_for_gateway() {
+  local deadline=$(( $(date +%s) + GATEWAY_BOOT_TIMEOUT_S ))
+  local attempt=0
+  while (( $(date +%s) < deadline )); do
+    attempt=$(( attempt + 1 ))
+    if curl -sf -o /dev/null --max-time 3 "${GATEWAY_HEALTH_URL}"; then
+      log "gateway healthy after ${attempt} probes"
+      echo "ready" > "${STATE_GATEWAY}"
+      return 0
+    fi
+    sleep 2
+  done
+  log "gateway did NOT become healthy in ${GATEWAY_BOOT_TIMEOUT_S}s"
+  echo "failed" > "${STATE_GATEWAY}"
+  return 1
+}
+
+run_warmup() {
+  if [[ "${WARMUP_ENABLED}" != "true" ]]; then
+    log "warmup disabled"
+    echo "skipped" > "${STATE_WARMUP}"
+    echo "true"    > "${STATE_READY}"
+    return 0
   fi
 
-  echo "[agroclaw] ERROR: OpenClaw must be provisioned before production start."
-  exit 1
-fi
+  log "running warm-up (timeout ${WARMUP_TIMEOUT_S}s)"
+  echo "running" > "${STATE_WARMUP}"
 
-echo "[agroclaw] Starting OpenClaw Gateway..."
-openclaw gateway --force > /tmp/openclaw-gateway.log 2>&1 &
-GATEWAY_PID=$!
-
-echo "[agroclaw] Waiting for Gateway readiness..."
-for i in $(seq 1 120); do
-  if curl -fsS "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
-    echo "[agroclaw] Gateway healthz OK."
-    break
+  # timeout returns 124 on timeout. We capture stdout/stderr to log.
+  if timeout "${WARMUP_TIMEOUT_S}" \
+      openclaw agent --agent "${AGENT_ID}" --message "${WARMUP_PROMPT}" \
+      >>"${WARMUP_LOG}" 2>&1; then
+    log "warm-up OK"
+    echo "ok"   > "${STATE_WARMUP}"
+    echo "true" > "${STATE_READY}"
+  else
+    local rc=$?
+    log "warm-up FAILED rc=${rc} (see ${WARMUP_LOG}) — service stays alive, will retry on first user request"
+    echo "failed" > "${STATE_WARMUP}"
+    # ready stays false; chat endpoint will return 503 until a successful agent call
   fi
+}
 
-  if ! kill -0 "$GATEWAY_PID" >/dev/null 2>&1; then
-    echo "[agroclaw] Gateway process exited during startup."
-    cat /tmp/openclaw-gateway.log || true
-    exit 1
+orchestrate() {
+  start_gateway
+  if wait_for_gateway; then
+    run_warmup
+  else
+    log "skipping warm-up because gateway never became healthy"
+    echo "skipped" > "${STATE_WARMUP}"
   fi
+}
 
-  sleep 2
-done
+# Run orchestration in background. Express must not wait for it.
+orchestrate &
 
-if ! curl -fsS "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
-  echo "[agroclaw] Gateway did not become healthy."
-  cat /tmp/openclaw-gateway.log || true
-  exit 1
-fi
-
-if [ "${AGROCLAW_WARMUP_ENABLED:-true}" = "true" ]; then
-  echo "[agroclaw] Running warm-up prompt..."
-  WARMUP_PROMPT="${AGROCLAW_WARMUP_PROMPT:-Responde únicamente: AgroClaw listo. No uses herramientas externas.}"
-  timeout "${AGROCLAW_WARMUP_TIMEOUT_SECONDS:-300}"     openclaw agent --agent "${OPENCLAW_AGENT_ID:-main}" --message "$WARMUP_PROMPT"     > /tmp/agroclaw-warmup.log 2>&1 || {
-      echo "[agroclaw] Warm-up failed. Logs:"
-      cat /tmp/agroclaw-warmup.log || true
-      exit 1
-    }
-  echo "[agroclaw] Warm-up completed."
-fi
-
-echo "[agroclaw] Starting Express bridge..."
-node /app/server.js &
-BRIDGE_PID=$!
-trap 'echo "[agroclaw] Stopping..."; kill "$BRIDGE_PID" "$GATEWAY_PID" 2>/dev/null || true' SIGTERM SIGINT
-wait -n "$BRIDGE_PID" "$GATEWAY_PID"
-EXIT_CODE=$?
-echo "[agroclaw] One process exited. Gateway logs follow."
-cat /tmp/openclaw-gateway.log || true
-exit "$EXIT_CODE"
+# ---------- foreground: express ----------
+log "starting Express bridge on :3000 (immediate)"
+cd /app
+exec node /app/server.js
