@@ -42,7 +42,7 @@ EXPOSE 3000
 # Liveness: Express is the contract. start-period generous but not enormous,
 # because Express now boots in ~1-2s independent of OpenClaw warm-up.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
-  CMD curl -fsS http://127.0.0.1:3000/health || exit 1
+  CMD if [ "$AGROCLAW_BOOTSTRAP_MODE" = "true" ]; then exit 0; fi; curl -fsS http://127.0.0.1:3000/health >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/scripts/start.sh"]
