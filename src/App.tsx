@@ -101,6 +101,7 @@ function normalizeAnswer(data: unknown): string {
     const obj = data as Record<string, unknown>;
 
     const possibleAnswer =
+      obj.reply ??
       obj.answer ??
       obj.response ??
       obj.message ??
@@ -135,7 +136,7 @@ async function askAgroClaw(prompt: string): Promise<string> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      prompt,
+      message: prompt,
       mode: "demo",
       source: "agroclaw-demo-frontend",
     }),

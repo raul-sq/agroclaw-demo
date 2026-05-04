@@ -13,6 +13,7 @@ function normalizeAnswer(data: unknown): string {
     const obj = data as Record<string, unknown>;
 
     const possibleAnswer =
+      obj.reply ??
       obj.answer ??
       obj.response ??
       obj.message ??
@@ -30,7 +31,7 @@ function normalizeAnswer(data: unknown): string {
 
 export async function askAgroClaw(prompt: string): Promise<AgroClawResponse> {
   const payload: AgroClawRequest = {
-    prompt,
+    message: prompt,
     mode: "demo",
     source: "agroclaw-demo-frontend",
   };

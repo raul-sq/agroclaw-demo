@@ -6,7 +6,7 @@ export type DemoPrompt = {
 };
 
 export type AgroClawRequest = {
-  prompt: string;
+  message: string;
   mode: "demo";
   source: "agroclaw-demo-frontend";
 };
