@@ -70,7 +70,11 @@ function cleanOpenClawOutput(rawOutput) {
 }
 
 app.post("/api/agroclaw/chat", (req, res) => {
-  const prompt = req.body?.prompt;
+  const body = req.body || {};
+    const prompt =
+      typeof body.prompt === "string" && body.prompt.trim()
+        ? body.prompt
+        : body.message;
 
   if (!prompt || typeof prompt !== "string") {
     return res.status(400).json({
