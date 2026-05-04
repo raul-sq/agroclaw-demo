@@ -3,13 +3,9 @@
 // - GET  /status   → real status (gateway + warmup + ready)
 // - POST /api/agroclaw/chat → 503 until ready, then proxies to OpenClaw
 //
-// Inference path: `openclaw infer model run --gateway --json --model ... --prompt ...`
-// Latency target: ~10-20 s per turn (vs ~100 s with `openclaw agent`).
-//
-// To preserve AgroClaw's personality without paying the agent loop cost, we read
-// the workspace markdown files once at startup and prepend them to every prompt
-// as a system context. This is a pragmatic middle ground; full agent loop with
-// tools/memory would require an ACP WebSocket bridge (next iteration).
+// Inference path: `openclaw agent --agent main --json --message ...`
+// This is intentionally the real AgroClaw agent path, not plain model inference.
+// The agent can use the workspace, skills and knowledge base.
 
 import express from 'express';
 import cors from 'cors';
@@ -26,9 +22,10 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openai-codex/gpt-5.5';
-const OPENCLAW_TIMEOUT_MS = parseInt(process.env.OPENCLAW_TIMEOUT_MS || '120000', 10);
+const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || 'main';
+const OPENCLAW_TIMEOUT_MS = parseInt(process.env.OPENCLAW_TIMEOUT_MS || '300000', 10);
 const MAX_PROMPT_CHARS = parseInt(process.env.MAX_PROMPT_CHARS || '4000', 10);
-const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_REQUESTS || '2', 10);
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_REQUESTS || '1', 10);
 
 const WORKSPACE_DIR = path.join(os.homedir(), '.openclaw', 'workspace');
 // Order matters: identity/soul first, then operational/tools, then user.
@@ -119,16 +116,50 @@ function drain() {
   }
 }
 
-// ---------- openclaw invocation (infer model run) ----------
-function callModel(prompt) {
+// ---------- openclaw invocation (agent) ----------
+function extractAgentText(parsed) {
+  const payloads =
+    parsed?.result?.payloads ??
+    parsed?.payloads ??
+    [];
+
+  if (Array.isArray(payloads)) {
+    for (const payload of payloads) {
+      if (typeof payload?.text === 'string' && payload.text.trim()) {
+        return payload.text.trim();
+      }
+    }
+  }
+
+  const visible =
+    parsed?.result?.finalAssistantVisibleText ??
+    parsed?.finalAssistantVisibleText ??
+    parsed?.result?.finalAssistantRawText ??
+    parsed?.finalAssistantRawText;
+
+  if (typeof visible === 'string' && visible.trim()) {
+    return visible.trim();
+  }
+
+  return '';
+}
+
+function callAgent(message) {
   return new Promise((resolve, reject) => {
+    const timeoutSeconds = Math.max(
+      30,
+      Math.floor(OPENCLAW_TIMEOUT_MS / 1000) - 5
+    );
+
     const args = [
-      'infer', 'model', 'run',
-      '--gateway',
+      'agent',
+      '--agent', OPENCLAW_AGENT_ID,
       '--json',
+      '--timeout', String(timeoutSeconds),
       '--model', OPENCLAW_MODEL,
-      '--prompt', prompt,
+      '--message', message,
     ];
+
     const child = spawn('openclaw', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let stdout = '';
@@ -150,22 +181,39 @@ function callModel(prompt) {
 
     child.on('close', code => {
       clearTimeout(killer);
-      if (timedOut) return reject(new Error('openclaw_timeout'));
-      if (code !== 0) {
-        return reject(new Error(`openclaw_exit_${code}: ${stderr.slice(0, 500)}`));
+
+      if (timedOut) {
+        return reject(new Error('openclaw_agent_timeout'));
       }
+
+      if (code !== 0) {
+        return reject(new Error(
+          `openclaw_agent_exit_${code}: stderr=${stderr.slice(0, 500)} stdout=${stdout.slice(0, 500)}`
+        ));
+      }
+
       try {
         const parsed = JSON.parse(stdout);
-        if (!parsed.ok) {
-          return reject(new Error(`openclaw_not_ok: ${JSON.stringify(parsed).slice(0, 500)}`));
+
+        if (parsed?.status && parsed.status !== 'ok') {
+          return reject(new Error(
+            `openclaw_agent_not_ok: ${JSON.stringify(parsed).slice(0, 1000)}`
+          ));
         }
-        const text = parsed?.outputs?.[0]?.text;
-        if (typeof text !== 'string') {
-          return reject(new Error('openclaw_no_text_in_outputs'));
+
+        const text = extractAgentText(parsed);
+
+        if (!text) {
+          return reject(new Error(
+            `openclaw_agent_no_text: ${JSON.stringify(parsed).slice(0, 1200)}`
+          ));
         }
-        resolve(text.trim());
+
+        resolve(text);
       } catch (err) {
-        reject(new Error(`openclaw_bad_json: ${err.message} | raw=${stdout.slice(0, 300)}`));
+        reject(new Error(
+          `openclaw_agent_bad_json: ${err.message} | raw=${stdout.slice(0, 500)}`
+        ));
       }
     });
   });
@@ -215,16 +263,14 @@ app.post('/api/agroclaw/chat', async (req, res) => {
     return res.status(413).json({ error: 'prompt_too_long', max: MAX_PROMPT_CHARS });
   }
 
-  const fullPrompt = buildPrompt(userMessage);
-
   try {
     const t0 = Date.now();
-    const reply = await runQueued(() => callModel(fullPrompt));
+    const reply = await runQueued(() => callAgent(userMessage));
     const elapsed_ms = Date.now() - t0;
     return res.status(200).json({ reply, elapsed_ms });
   } catch (err) {
     const msg = (err && err.message) || 'agent_error';
-    const status = msg === 'openclaw_timeout' ? 504 : 502;
+    const status = msg === 'openclaw_agent_timeout' ? 504 : 502;
     console.error('[agroclaw] chat error:', msg);
     return res.status(status).json({ error: msg });
   }

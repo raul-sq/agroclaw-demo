@@ -101,14 +101,21 @@ wait_for_gateway_ready() {
   return 1
 }
 
-# ---------- warm-up via 'infer model run' (fast: ~10-15s) ----------
+# ---------- warm-up via 'openclaw agent' (real AgroClaw path) ----------
 run_warmup_once() {
+  AGENT_TIMEOUT_S=$((WARMUP_TIMEOUT_S - 5))
+  if [ "$AGENT_TIMEOUT_S" -lt 30 ]; then
+    AGENT_TIMEOUT_S=30
+  fi
+
   timeout "${WARMUP_TIMEOUT_S}" \
-    openclaw infer model run \
-      --gateway \
+    openclaw agent \
+      --agent "${OPENCLAW_AGENT_ID:-main}" \
+      --json \
+      --timeout "${AGENT_TIMEOUT_S}" \
       --model "${OPENCLAW_MODEL}" \
-      --prompt "${WARMUP_PROMPT}" \
-      >>"${WARMUP_LOG}" 2>&1
+      --message "${WARMUP_PROMPT:-Responde únicamente: AgroClaw listo. No uses herramientas externas.}" \
+      > "${WARMUP_LOG}" 2>&1
 }
 
 run_warmup() {
@@ -119,7 +126,7 @@ run_warmup() {
     return 0
   fi
 
-  log "running warm-up via 'infer model run' (timeout=${WARMUP_TIMEOUT_S}s, retries=${WARMUP_MAX_RETRIES})"
+  log "running warm-up via 'openclaw agent' (timeout=${WARMUP_TIMEOUT_S}s, retries=${WARMUP_MAX_RETRIES})"
   echo "running" > "${STATE_WARMUP}"
 
   local i
