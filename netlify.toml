@@ -1,4 +1,10 @@
 [[redirects]]
+  from = "/health"
+  to = "http://c1cjro22w1136qy4rvguck6b.204.168.177.158.sslip.io/health"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/agroclaw/chat"
   to = "http://c1cjro22w1136qy4rvguck6b.204.168.177.158.sslip.io/api/agroclaw/chat"
   status = 200

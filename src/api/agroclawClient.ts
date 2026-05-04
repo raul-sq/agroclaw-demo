@@ -1,6 +1,6 @@
 import type { AgroClawRequest, AgroClawResponse } from "../types/agroclaw";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const AGROCLAW_ENDPOINT =
   import.meta.env.VITE_AGROCLAW_ENDPOINT ?? "/api/agroclaw/chat";
 

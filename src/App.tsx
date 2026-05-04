@@ -12,7 +12,7 @@ type DemoPrompt = {
 type BackendStatus = "checking" | "ready" | "error";
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+  import.meta.env.VITE_API_BASE_URL ?? "";
 
 const AGROCLAW_ENDPOINT =
   import.meta.env.VITE_AGROCLAW_ENDPOINT ?? "/api/agroclaw/chat";
@@ -155,7 +155,7 @@ async function askAgroClaw(prompt: string): Promise<string> {
 
 function getBackendBadgeText(status: BackendStatus): string {
   if (status === "checking") {
-    return "Despertando backend · Render";
+    return "Comprobando backend AgroClaw";
   }
 
   if (status === "ready") {
@@ -254,15 +254,14 @@ function App() {
 
           {backendStatus === "checking" && (
             <p className="backend-header-notice">
-              Render puede tardar en activar el backend si estaba en reposo. La
-              demo está despertando el servicio antes de habilitar las tarjetas.
+              La demo está comprobando el backend AgroClaw antes de habilitar las tarjetas.
             </p>
           )}
 
           {backendStatus === "error" && (
             <div className="backend-header-warning">
               <span>
-                El backend no está disponible ahora mismo. Comprueba Render o
+                El backend no está disponible ahora mismo. Comprueba el backend Coolify/Hetzner o
                 reintenta la conexión.
               </span>
 
