@@ -292,4 +292,4 @@ No es todavía la versión final de despliegue público. La prioridad posterior 
 1. Reducir latencia.
 2. Comparar modelos/configuraciones.
 3. Mejorar experiencia de usuario durante la espera.
-4. Retomar con calma la arquitectura pública Hetzner/Coolify.
+4. Retomar con calma la arquitectura pública VPS/Coolify.
