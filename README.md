@@ -30,7 +30,7 @@ La demo no pretende demostrar cobertura total del dominio agrario. Su objetivo e
 
 ## Arquitectura local de la demo
 
-En local, la demo requiere tres capas principales:
+En local, la demo requiere tres procesos principales y un workspace de conocimiento:
 
 ```text
 Frontend Vite/React
