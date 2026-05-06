@@ -11,7 +11,7 @@ Frontend Vite local
 → Base de conocimiento de AgroClaw
 ```
 
-Esta rama **no representa todavía la arquitectura pública definitiva** sobre Netlify + Coolify + Hetzner. Su objetivo es ofrecer una demo reproducible, estable y segura en local.
+Esta rama **no representa todavía la arquitectura pública definitiva** sobre Netlify + Coolify + VPS. Su objetivo es ofrecer una demo reproducible, estable y segura en local.
 
 ---
 
@@ -194,7 +194,7 @@ Se ha probado la idea:
 
 ```text
 Frontend Netlify
-→ Backend Coolify en VPS Hetzner
+→ Backend Coolify en VPS
 → OpenClaw
 ```
 
